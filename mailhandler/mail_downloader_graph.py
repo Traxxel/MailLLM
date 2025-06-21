@@ -72,6 +72,9 @@ class MailDownloaderGraph:
         self.html_converter.ignore_images = False
         self.html_converter.body_width = 0
         
+        # Deduplizierung für PDF-Attachments
+        self.seen_pdf_attachment_ids = set()
+        
         # Verzeichnisse erstellen
         self.mail_dir.mkdir(exist_ok=True)
         self.pdf_dir.mkdir(exist_ok=True)
@@ -604,6 +607,11 @@ Ordner: {folder_name}
                         logger.warning(f"Keine ID für Attachment oder E-Mail: {attachment_name}")
                         continue
                     
+                    # Deduplizierung: Überspringe bereits gesehene PDF-Attachments
+                    if attachment_id in self.seen_pdf_attachment_ids:
+                        logger.info(f"PDF-Attachment bereits heruntergeladen, überspringe: {attachment_name}")
+                        continue
+                    
                     # PDF-Dateiname mit Timestamp erstellen
                     safe_name = self.sanitize_filename(attachment_name)
                     if not safe_name.lower().endswith('.pdf'):
@@ -617,6 +625,9 @@ Ordner: {folder_name}
                     if pdf_content:
                         with open(pdf_filepath, 'wb') as f:
                             f.write(pdf_content)
+                        
+                        # Attachment-ID als gesehen markieren
+                        self.seen_pdf_attachment_ids.add(attachment_id)
                         
                         downloaded_pdfs.append(str(pdf_filepath))
                         logger.info(f"PDF gespeichert: {pdf_filename}")
