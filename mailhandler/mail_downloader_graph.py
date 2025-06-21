@@ -54,7 +54,6 @@ class MailDownloaderGraph:
         # Neue Optionen für Unterverzeichnisse und Archive
         self.include_folders = os.getenv('INCLUDE_FOLDERS', 'true').lower() == 'true'
         self.include_archive = os.getenv('INCLUDE_ARCHIVE', 'true').lower() == 'true'
-        self.folder_names = os.getenv('FOLDER_NAMES', '').split(',') if os.getenv('FOLDER_NAMES') else []
         
         # Chunk-basiertes Laden
         self.chunk_size = int(os.getenv('CHUNK_SIZE', '50'))
@@ -311,10 +310,6 @@ class MailDownloaderGraph:
                 if folder_name.lower() in ['inbox', 'archive', 'sent items', 'deleted items', 'drafts']:
                     continue
                 
-                # Prüfe ob spezifische Ordner gefiltert werden sollen
-                if self.folder_names and folder_name not in self.folder_names:
-                    continue
-                
                 logger.info(f"Prüfe Ordner: {folder_name}")
                 try:
                     folder_emails = self._get_emails_from_folder(access_token, headers, since_date, folder_name)
@@ -493,10 +488,6 @@ class MailDownloaderGraph:
                 
                 # Überspringe spezielle Ordner
                 if folder_name.lower() in ['inbox', 'archive', 'sent items', 'deleted items', 'drafts']:
-                    continue
-                
-                # Prüfe ob spezifische Ordner gefiltert werden sollen
-                if self.folder_names and folder_name not in self.folder_names:
                     continue
                 
                 logger.info(f"Prüfe Ordner: {folder_name}")
