@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""
+MailLLM - E-Mail Downloader mit Microsoft Graph API
+Verwendet OAuth2 und Microsoft Graph API für moderne M365-Konten
+"""
+
+import os
+import re
+import sys
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import List, Dict, Any
+import logging
+
+from dotenv import load_dotenv
+from tqdm import tqdm
+import html2text
+import requests
+
+# OAuth2-Bibliotheken
+try:
+    import msal
+    OAUTH2_AVAILABLE = True
+except ImportError:
+    OAUTH2_AVAILABLE = False
+    print("Warnung: msal nicht verfügbar. Installiere mit: pip install msal")
+
+# Logging konfigurieren
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('mail_downloader.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+
+class MailDownloaderGraph:
+    """Hauptklasse für den E-Mail-Download mit Microsoft Graph API"""
+    
+    def __init__(self):
+        load_dotenv()
+        self.email_address = os.getenv('EMAIL_ADDRESS')
+        self.client_id = os.getenv('CLIENT_ID')
+        self.client_secret = os.getenv('CLIENT_SECRET')
+        self.tenant_id = os.getenv('TENANT_ID')
+        self.max_emails = int(os.getenv('MAX_EMAILS', '100'))
+        self.days_back = int(os.getenv('DAYS_BACK', '30'))
+        self.mail_dir = Path(os.getenv('MAIL_DIR', 'mails'))
+        
+        # Graph API Endpoints
+        self.graph_endpoint = "https://graph.microsoft.com/v1.0"
+        
+        # HTML zu Text Konverter
+        self.html_converter = html2text.HTML2Text()
+        self.html_converter.ignore_links = False
+        self.html_converter.ignore_images = False
+        self.html_converter.body_width = 0
+        
+        # Verzeichnis erstellen
+        self.mail_dir.mkdir(exist_ok=True)
+        
+        self._validate_config()
+    
+    def _validate_config(self):
+        """Validiert die Konfiguration"""
+        if not self.email_address:
+            raise ValueError("EMAIL_ADDRESS muss in .env gesetzt werden")
+        
+        if not OAUTH2_AVAILABLE:
+            raise ValueError("msal ist nicht verfügbar")
+        
+        if not self.client_id or not self.client_secret or not self.tenant_id:
+            raise ValueError("CLIENT_ID, CLIENT_SECRET und TENANT_ID müssen in .env gesetzt werden")
+    
+    def get_access_token(self) -> str:
+        """Holt ein OAuth2-Token für Microsoft Graph API"""
+        logger.info("Hole OAuth2-Token für Microsoft Graph...")
+        
+        # MSAL-Anwendung erstellen
+        app = msal.ConfidentialClientApplication(
+            client_id=self.client_id,
+            client_credential=self.client_secret,
+            authority=f"https://login.microsoftonline.com/{self.tenant_id}"
+        )
+        
+        # Scopes für E-Mail-Zugriff
+        scopes = ['https://graph.microsoft.com/.default']
+        
+        # Token anfordern
+        result = app.acquire_token_silent(scopes, account=None)
+        if not result:
+            result = app.acquire_token_for_client(scopes=scopes)
+        
+        if "access_token" in result:
+            logger.info("OAuth2-Token erfolgreich erhalten")
+            return result['access_token']
+        else:
+            error_msg = f"Fehler beim OAuth2-Token: {result.get('error_description', result.get('error', 'Unbekannter Fehler'))}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+    
+    def sanitize_filename(self, filename: str) -> str:
+        """Bereinigt Dateinamen von ungültigen Zeichen"""
+        filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        filename = re.sub(r'_+', '_', filename)
+        filename = filename.strip()
+        if len(filename) > 100:
+            filename = filename[:100]
+        return filename
+    
+    def extract_text_from_email(self, email_content: str, content_type: str = 'text/plain') -> str:
+        """Extrahiert reinen Text aus E-Mail-Inhalt"""
+        if content_type.startswith('text/html'):
+            # HTML zu Text konvertieren
+            text = self.html_converter.handle(email_content)
+        else:
+            # Plain text
+            text = email_content
+        
+        # Text bereinigen
+        text = text.strip()
+        
+        # HTML-Tags entfernen (falls noch welche übrig sind)
+        import re
+        text = re.sub(r'<[^>]+>', '', text)
+        
+        # HTML-Entities dekodieren
+        import html
+        text = html.unescape(text)
+        
+        # Mehrfache Leerzeichen entfernen
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Mehrfache Zeilenumbrüche entfernen
+        text = re.sub(r'\n\s*\n', '\n\n', text)
+        
+        # Leerzeichen am Anfang und Ende von Zeilen entfernen
+        text = '\n'.join(line.strip() for line in text.split('\n'))
+        
+        return text
+    
+    def get_emails_from_graph(self, access_token: str) -> List[Dict[str, Any]]:
+        """Holt E-Mails von Microsoft Graph API"""
+        logger.info("Hole E-Mails von Microsoft Graph API...")
+        
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/json'
+        }
+        
+        # Zeitraum definieren
+        since_date = (datetime.now() - timedelta(days=self.days_back)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        
+        # Graph API Anfrage
+        url = f"{self.graph_endpoint}/users/{self.email_address}/messages"
+        params = {
+            '$top': self.max_emails,
+            '$orderby': 'receivedDateTime desc',
+            '$filter': f"receivedDateTime ge {since_date}",
+            '$select': 'id,subject,from,toRecipients,receivedDateTime,body,bodyPreview'
+        }
+        
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            emails = data.get('value', [])
+            
+            logger.info(f"E-Mails von Graph API erhalten: {len(emails)}")
+            return emails
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Fehler bei Graph API Anfrage: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Response: {e.response.text}")
+            raise
+    
+    def download_via_graph_api(self) -> List[str]:
+        """Lädt E-Mails über Microsoft Graph API herunter"""
+        logger.info("Starte E-Mail-Download über Microsoft Graph API...")
+        
+        # OAuth2-Token holen
+        access_token = self.get_access_token()
+        
+        # E-Mails von Graph API holen
+        emails = self.get_emails_from_graph(access_token)
+        
+        downloaded_files = []
+        
+        for email_data in tqdm(emails, desc="E-Mails herunterladen"):
+            try:
+                # Empfangsdatum
+                received_date_str = email_data.get('receivedDateTime', '')
+                if received_date_str:
+                    try:
+                        received_date = datetime.fromisoformat(received_date_str.replace('Z', '+00:00'))
+                        date_str = received_date.strftime('%Y-%m-%d-%H-%M-%S')
+                    except:
+                        date_str = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+                else:
+                    date_str = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+                
+                # Betreff
+                subject = email_data.get('subject', 'Kein_Betreff')
+                subject = self.sanitize_filename(subject)
+                
+                # Dateiname
+                filename = f"{date_str}--{subject}.txt"
+                filepath = self.mail_dir / filename
+                
+                # E-Mail-Inhalt extrahieren
+                body = email_data.get('body', {})
+                content_type = body.get('contentType', 'text/plain')
+                text_content = body.get('content', '')
+                
+                if not text_content:
+                    text_content = email_data.get('bodyPreview', 'Kein Inhalt verfügbar')
+                
+                # Text extrahieren
+                extracted_text = self.extract_text_from_email(text_content, content_type)
+                
+                # Absender und Empfänger
+                from_info = email_data.get('from', {})
+                from_email = from_info.get('emailAddress', {}).get('address', 'Unbekannt')
+                from_name = from_info.get('emailAddress', {}).get('name', '')
+                
+                to_recipients = email_data.get('toRecipients', [])
+                to_email = to_recipients[0].get('emailAddress', {}).get('address', 'Unbekannt') if to_recipients else 'Unbekannt'
+                
+                # Metadaten hinzufügen
+                email_text = f"""Von: {from_name} <{from_email}>
+An: {to_email}
+Datum: {received_date_str}
+Betreff: {email_data.get('subject', 'Kein Betreff')}
+
+{extracted_text}
+"""
+                
+                # Datei speichern
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(email_text)
+                
+                downloaded_files.append(str(filepath))
+                logger.info(f"E-Mail gespeichert: {filename}")
+                
+            except Exception as e:
+                logger.error(f"Fehler beim Verarbeiten der E-Mail: {e}")
+                continue
+        
+        return downloaded_files
+    
+    def download_emails(self) -> List[str]:
+        """Hauptmethode für den E-Mail-Download"""
+        logger.info(f"Starte E-Mail-Download für {self.email_address}")
+        logger.info(f"Verwende Microsoft Graph API")
+        logger.info(f"Maximale Anzahl E-Mails: {self.max_emails}")
+        logger.info(f"Zeitraum: {self.days_back} Tage zurück")
+        
+        try:
+            return self.download_via_graph_api()
+        except Exception as e:
+            logger.error(f"Fehler beim E-Mail-Download: {e}")
+            return []
+
+
+def main():
+    """Hauptfunktion"""
+    try:
+        downloader = MailDownloaderGraph()
+        downloaded_files = downloader.download_emails()
+        
+        logger.info(f"Download abgeschlossen. {len(downloaded_files)} E-Mails heruntergeladen.")
+        logger.info(f"E-Mails gespeichert in: {downloader.mail_dir}")
+        
+        if downloaded_files:
+            print(f"\n✅ Erfolgreich {len(downloaded_files)} E-Mails heruntergeladen!")
+            print(f"📁 Speicherort: {downloader.mail_dir}")
+        else:
+            print("❌ Keine E-Mails heruntergeladen.")
+            
+    except Exception as e:
+        logger.error(f"Kritischer Fehler: {e}")
+        print(f"❌ Fehler: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main() 
