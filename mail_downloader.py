@@ -9,7 +9,7 @@ import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 import logging
 
 from dotenv import load_dotenv
@@ -124,50 +124,82 @@ class MailDownloader:
         
         return text
     
-    def download_via_ews(self) -> List[str]:
-        """Lädt E-Mails über Exchange Web Services herunter"""
-        logger.info("Starte E-Mail-Download über EWS...")
+    def download_via_ews(self) -> List[Dict[str, str]]:
+        """Lädt E-Mails über Exchange Web Services (EWS) herunter"""
+        logger.info("Starte E-Mail-Download über Exchange Web Services...")
         
-        # SSL-Verifizierung deaktivieren (falls nötig)
-        BaseProtocol.HTTP_ADAPTER_CLS = NoVerifyHTTPAdapter
+        # Exchange-Konto konfigurieren
+        credentials = Credentials(
+            username=self.email_address,
+            password=self.email_password
+        )
         
-        # Verbindung aufbauen
-        credentials = Credentials(self.email_address, self.email_password)
-        config = Configuration(service_endpoint=f'https://{self.email_server}/EWS/Exchange.asmx', credentials=credentials)
-        account = Account(primary_smtp_address=self.email_address, config=config, autodiscover=False, access_type=DELEGATE)
+        config = Configuration(
+            service_endpoint=f'https://{self.email_server}/EWS/Exchange.asmx',
+            credentials=credentials
+        )
+        
+        account = Account(
+            primary_smtp_address=self.email_address,
+            config=config,
+            autodiscover=False,
+            access_type=DELEGATE
+        )
         
         # Zeitraum definieren
         start_date = datetime.now() - timedelta(days=self.days_back)
         
         downloaded_files = []
+        seen_email_ids = set()  # Für Deduplizierung
         
         # 1. Posteingang (Inbox)
         logger.info("Lade E-Mails aus dem Posteingang...")
         inbox_files = self._download_from_folder(account.inbox, start_date, "Inbox")
-        downloaded_files.extend(inbox_files)
+        
+        # Deduplizierung für Inbox
+        for file_info in inbox_files:
+            email_id = file_info.get('email_id')
+            if email_id and email_id not in seen_email_ids:
+                seen_email_ids.add(email_id)
+                downloaded_files.append(file_info)
+        
+        logger.info(f"Nach Deduplizierung: {len(downloaded_files)} eindeutige E-Mails aus Inbox")
         
         # 2. Unterverzeichnisse (Ordner)
         if self.include_folders:
             logger.info("Lade E-Mails aus Unterverzeichnissen...")
             folder_files = self._download_from_folders(account, start_date)
-            downloaded_files.extend(folder_files)
+            
+            # Deduplizierung für Ordner
+            for file_info in folder_files:
+                email_id = file_info.get('email_id')
+                if email_id and email_id not in seen_email_ids:
+                    seen_email_ids.add(email_id)
+                    downloaded_files.append(file_info)
+            
+            logger.info(f"Nach Deduplizierung: {len(downloaded_files)} eindeutige E-Mails gesamt")
         
         # 3. Archiv
         if self.include_archive:
             logger.info("Lade E-Mails aus dem Archiv...")
             try:
-                # Prüfe ob Archive-Attribut existiert
-                if hasattr(account, 'archive'):
-                    archive_files = self._download_from_folder(account.archive, start_date, "Archive")
-                    downloaded_files.extend(archive_files)
-                else:
-                    logger.info("Archiv nicht verfügbar für dieses Konto")
+                archive_files = self._download_from_folder(account.archive, start_date, "Archive")
+                
+                # Deduplizierung für Archiv
+                for file_info in archive_files:
+                    email_id = file_info.get('email_id')
+                    if email_id and email_id not in seen_email_ids:
+                        seen_email_ids.add(email_id)
+                        downloaded_files.append(file_info)
+                
+                logger.info(f"Nach Deduplizierung: {len(downloaded_files)} eindeutige E-Mails gesamt")
             except Exception as e:
                 logger.warning(f"Archiv nicht verfügbar: {e}")
         
+        logger.info(f"Gesamt eindeutige E-Mails heruntergeladen: {len(downloaded_files)}")
         return downloaded_files
     
-    def _download_from_folder(self, folder, start_date: datetime, folder_name: str) -> List[str]:
+    def _download_from_folder(self, folder, start_date: datetime, folder_name: str) -> List[Dict[str, str]]:
         """Lädt E-Mails aus einem spezifischen Ordner mit Chunk-basiertem Laden"""
         try:
             downloaded_files = []
@@ -186,9 +218,9 @@ class MailDownloader:
                 
                 for message in tqdm(messages_list, desc=f"E-Mails aus {folder_name} (Chunk {offset//self.chunk_size + 1})"):
                     try:
-                        filepath = self._save_email_message(message, folder_name)
-                        if filepath:
-                            downloaded_files.append(filepath)
+                        result = self._save_email_message(message, folder_name)
+                        if result:
+                            downloaded_files.append(result)
                     except Exception as e:
                         logger.error(f"Fehler beim Verarbeiten der E-Mail aus {folder_name}: {e}")
                         continue
@@ -219,7 +251,7 @@ class MailDownloader:
             logger.error(f"Fehler beim Zugriff auf {folder_name}: {e}")
             return []
     
-    def _download_from_folders(self, account, start_date: datetime) -> List[str]:
+    def _download_from_folders(self, account, start_date: datetime) -> List[Dict[str, str]]:
         """Lädt E-Mails aus allen verfügbaren Ordnern"""
         downloaded_files = []
         
@@ -247,9 +279,12 @@ class MailDownloader:
         
         return downloaded_files
     
-    def _save_email_message(self, message, folder_name: str = "Inbox") -> Optional[str]:
+    def _save_email_message(self, message, folder_name: str = "Inbox") -> Optional[Dict[str, str]]:
         """Speichert eine einzelne E-Mail-Nachricht"""
         try:
+            # E-Mail-ID für Deduplizierung
+            email_id = str(message.id) if hasattr(message, 'id') else ""
+            
             # Empfangsdatum
             received_date = message.datetime_received
             date_str = received_date.strftime('%Y-%m-%d-%H-%M-%S')
@@ -287,7 +322,10 @@ Ordner: {folder_name}
                 f.write(email_text)
             
             logger.info(f"E-Mail gespeichert: {filename}")
-            return str(filepath)
+            return {
+                'filepath': str(filepath),
+                'email_id': email_id
+            }
             
         except Exception as e:
             logger.error(f"Fehler beim Speichern der E-Mail: {e}")
@@ -399,7 +437,9 @@ Ordner: POP3
         
         try:
             if self.use_ews:
-                return self.download_via_ews()
+                result = self.download_via_ews()
+                # EWS gibt Dictionaries zurück, extrahiere filepath
+                return [f['filepath'] for f in result]
             else:
                 return self.download_via_pop3()
         except Exception as e:
@@ -413,19 +453,15 @@ def main():
         downloader = MailDownloader()
         downloaded_files = downloader.download_emails()
         
-        logger.info(f"Download abgeschlossen. {len(downloaded_files)} E-Mails heruntergeladen.")
-        logger.info(f"E-Mails gespeichert in: {downloader.mail_dir}")
-        
         if downloaded_files:
             print(f"\n✅ Erfolgreich {len(downloaded_files)} E-Mails heruntergeladen!")
-            print(f"📁 Speicherort: {downloader.mail_dir}")
+            print(f"📁 Dateien gespeichert in: {downloader.mail_dir}")
         else:
-            print("❌ Keine E-Mails heruntergeladen.")
+            print("❌ Keine E-Mails heruntergeladen")
             
     except Exception as e:
-        logger.error(f"Kritischer Fehler: {e}")
+        logger.error(f"Fehler beim E-Mail-Download: {e}")
         print(f"❌ Fehler: {e}")
-        sys.exit(1)
 
 
 if __name__ == "__main__":

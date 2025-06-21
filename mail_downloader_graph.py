@@ -172,11 +172,15 @@ class MailDownloaderGraph:
         inbox_emails = self._get_emails_from_folder(access_token, headers, since_date, "Inbox")
         all_emails.extend(inbox_emails)
         
+        logger.info(f"E-Mails aus Inbox geladen: {len(inbox_emails)}")
+        
         # 2. Unterverzeichnisse (Ordner)
         if self.include_folders:
             logger.info("Lade E-Mails aus Unterverzeichnissen...")
             folder_emails = self._get_emails_from_folders(access_token, headers, since_date)
             all_emails.extend(folder_emails)
+            
+            logger.info(f"E-Mails aus Ordnern geladen: {len(folder_emails)}")
         
         # 3. Archiv
         if self.include_archive:
@@ -184,6 +188,8 @@ class MailDownloaderGraph:
             try:
                 archive_emails = self._get_emails_from_folder(access_token, headers, since_date, "Archive")
                 all_emails.extend(archive_emails)
+                
+                logger.info(f"E-Mails aus Archiv geladen: {len(archive_emails)}")
             except Exception as e:
                 logger.warning(f"Archiv nicht verfügbar: {e}")
         
@@ -329,75 +335,31 @@ class MailDownloaderGraph:
         # OAuth2-Token holen
         access_token = self.get_access_token()
         
-        # E-Mails von Graph API holen
-        emails = self.get_emails_from_graph(access_token)
-        
+        # E-Mails direkt laden und speichern
         downloaded_files = []
+        seen_email_ids = set()
         
-        for email_data in tqdm(emails, desc="E-Mails herunterladen"):
+        # 1. Posteingang (Inbox)
+        logger.info("Lade und speichere E-Mails aus dem Posteingang...")
+        inbox_files = self._download_and_save_emails_from_folder(access_token, "Inbox", seen_email_ids)
+        downloaded_files.extend(inbox_files)
+        
+        # 2. Unterverzeichnisse (Ordner)
+        if self.include_folders:
+            logger.info("Lade und speichere E-Mails aus Unterverzeichnissen...")
+            folder_files = self._download_and_save_emails_from_folders(access_token, seen_email_ids)
+            downloaded_files.extend(folder_files)
+        
+        # 3. Archiv
+        if self.include_archive:
+            logger.info("Lade und speichere E-Mails aus dem Archiv...")
             try:
-                # Empfangsdatum
-                received_date_str = email_data.get('receivedDateTime', '')
-                if received_date_str:
-                    try:
-                        received_date = datetime.fromisoformat(received_date_str.replace('Z', '+00:00'))
-                        date_str = received_date.strftime('%Y-%m-%d-%H-%M-%S')
-                    except:
-                        date_str = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-                else:
-                    date_str = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-                
-                # Betreff
-                subject = email_data.get('subject', 'Kein_Betreff')
-                subject = self.sanitize_filename(subject)
-                
-                # Ordner-Information
-                folder_name = email_data.get('folder_name', 'Unknown')
-                
-                # Dateiname mit Ordner-Präfix
-                filename = f"{date_str}--[{folder_name}]--{subject}.txt"
-                filepath = self.mail_dir / filename
-                
-                # E-Mail-Inhalt extrahieren
-                body = email_data.get('body', {})
-                content_type = body.get('contentType', 'text/plain')
-                text_content = body.get('content', '')
-                
-                if not text_content:
-                    text_content = email_data.get('bodyPreview', 'Kein Inhalt verfügbar')
-                
-                # Text extrahieren
-                extracted_text = self.extract_text_from_email(text_content, content_type)
-                
-                # Absender und Empfänger
-                from_info = email_data.get('from', {})
-                from_email = from_info.get('emailAddress', {}).get('address', 'Unbekannt')
-                from_name = from_info.get('emailAddress', {}).get('name', '')
-                
-                to_recipients = email_data.get('toRecipients', [])
-                to_email = to_recipients[0].get('emailAddress', {}).get('address', 'Unbekannt') if to_recipients else 'Unbekannt'
-                
-                # Metadaten hinzufügen
-                email_text = f"""Von: {from_name} <{from_email}>
-An: {to_email}
-Datum: {received_date_str}
-Betreff: {email_data.get('subject', 'Kein Betreff')}
-Ordner: {folder_name}
-
-{extracted_text}
-"""
-                
-                # Datei speichern
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(email_text)
-                
-                downloaded_files.append(str(filepath))
-                logger.info(f"E-Mail gespeichert: {filename}")
-                
+                archive_files = self._download_and_save_emails_from_folder(access_token, "Archive", seen_email_ids)
+                downloaded_files.extend(archive_files)
             except Exception as e:
-                logger.error(f"Fehler beim Verarbeiten der E-Mail: {e}")
-                continue
+                logger.warning(f"Archiv nicht verfügbar: {e}")
         
+        logger.info(f"Gesamt eindeutige E-Mails heruntergeladen: {len(downloaded_files)}")
         return downloaded_files
     
     def download_emails(self) -> List[str]:
@@ -412,6 +374,205 @@ Ordner: {folder_name}
         except Exception as e:
             logger.error(f"Fehler beim E-Mail-Download: {e}")
             return []
+    
+    def _download_and_save_emails_from_folder(self, access_token: str, folder_name: str, seen_email_ids: set) -> List[str]:
+        """Lädt E-Mails aus einem Ordner und speichert sie direkt"""
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/json'
+        }
+        
+        # Zeitraum definieren
+        since_date = (datetime.now() - timedelta(days=self.days_back)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        
+        downloaded_files = []
+        skip_count = 0
+        
+        try:
+            # Graph API Anfrage für spezifischen Ordner
+            if folder_name.lower() == "inbox":
+                url = f"{self.graph_endpoint}/users/{self.email_address}/mailFolders/inbox/messages"
+            elif folder_name.lower() == "archive":
+                url = f"{self.graph_endpoint}/users/{self.email_address}/mailFolders/archive/messages"
+            else:
+                # Für andere Ordner müssen wir zuerst die Ordner-ID finden
+                folder_id = self._get_folder_id(access_token, headers, folder_name)
+                if not folder_id:
+                    logger.warning(f"Ordner '{folder_name}' nicht gefunden")
+                    return []
+                url = f"{self.graph_endpoint}/users/{self.email_address}/mailFolders/{folder_id}/messages"
+            
+            while True:
+                params = {
+                    '$top': self.chunk_size,
+                    '$skip': skip_count,
+                    '$orderby': 'receivedDateTime desc',
+                    '$filter': f"receivedDateTime ge {since_date}",
+                    '$select': 'id,subject,from,toRecipients,receivedDateTime,body,bodyPreview'
+                }
+                
+                logger.info(f"Lade Chunk {skip_count//self.chunk_size + 1} für {folder_name} (Skip: {skip_count})")
+                
+                response = requests.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                
+                data = response.json()
+                emails = data.get('value', [])
+                
+                if not emails:
+                    logger.info(f"Keine weiteren E-Mails in {folder_name}")
+                    break
+                
+                # E-Mails verarbeiten und speichern
+                chunk_saved = 0
+                for email_data in emails:
+                    email_id = email_data.get('id')
+                    
+                    # Deduplizierung
+                    if email_id and email_id in seen_email_ids:
+                        continue
+                    
+                    seen_email_ids.add(email_id)
+                    
+                    try:
+                        # E-Mail speichern
+                        filepath = self._save_email_data(email_data, folder_name)
+                        if filepath:
+                            downloaded_files.append(filepath)
+                            chunk_saved += 1
+                    except Exception as e:
+                        logger.error(f"Fehler beim Speichern der E-Mail: {e}")
+                        continue
+                
+                logger.info(f"Chunk geladen: {len(emails)} E-Mails aus {folder_name}, {chunk_saved} neue gespeichert")
+                
+                # Prüfe ob wir alle E-Mails laden sollen oder nur bis max_emails
+                if not self.load_all_emails and len(downloaded_files) >= self.max_emails:
+                    logger.info(f"Maximale Anzahl E-Mails ({self.max_emails}) erreicht für {folder_name}")
+                    break
+                
+                # Prüfe ob es weitere E-Mails gibt
+                if len(emails) < self.chunk_size:
+                    logger.info(f"Alle E-Mails aus {folder_name} geladen")
+                    break
+                
+                skip_count += self.chunk_size
+                
+                # Optionaler Sicherheitscheck: Maximal E-Mails pro Ordner
+                if self.max_emails_per_folder > 0 and skip_count >= self.max_emails_per_folder:
+                    logger.warning(f"Maximale Anzahl E-Mails ({self.max_emails_per_folder}) für {folder_name} erreicht")
+                    break
+            
+            logger.info(f"Gesamt E-Mails aus {folder_name} gespeichert: {len(downloaded_files)}")
+            return downloaded_files
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Fehler bei Graph API Anfrage für {folder_name}: {e}")
+            return []
+    
+    def _download_and_save_emails_from_folders(self, access_token: str, seen_email_ids: set) -> List[str]:
+        """Lädt E-Mails aus allen verfügbaren Ordnern und speichert sie direkt"""
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/json'
+        }
+        
+        downloaded_files = []
+        
+        try:
+            # Alle Ordner auflisten
+            url = f"{self.graph_endpoint}/users/{self.email_address}/mailFolders"
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            
+            data = response.json()
+            folders = data.get('value', [])
+            
+            for folder in folders:
+                folder_name = folder.get('displayName', '')
+                
+                # Überspringe spezielle Ordner
+                if folder_name.lower() in ['inbox', 'archive', 'sent items', 'deleted items', 'drafts']:
+                    continue
+                
+                # Prüfe ob spezifische Ordner gefiltert werden sollen
+                if self.folder_names and folder_name not in self.folder_names:
+                    continue
+                
+                logger.info(f"Prüfe Ordner: {folder_name}")
+                try:
+                    folder_files = self._download_and_save_emails_from_folder(access_token, folder_name, seen_email_ids)
+                    downloaded_files.extend(folder_files)
+                except Exception as e:
+                    logger.warning(f"Fehler beim Zugriff auf Ordner {folder_name}: {e}")
+                    continue
+        
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Fehler beim Auflisten der Ordner: {e}")
+        
+        return downloaded_files
+    
+    def _save_email_data(self, email_data: Dict[str, Any], folder_name: str) -> Optional[str]:
+        """Speichert eine einzelne E-Mail-Nachricht"""
+        try:
+            # Empfangsdatum
+            received_date_str = email_data.get('receivedDateTime', '')
+            if received_date_str:
+                try:
+                    received_date = datetime.fromisoformat(received_date_str.replace('Z', '+00:00'))
+                    date_str = received_date.strftime('%Y-%m-%d-%H-%M-%S')
+                except:
+                    date_str = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+            else:
+                date_str = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+            
+            # Betreff
+            subject = email_data.get('subject', 'Kein_Betreff')
+            subject = self.sanitize_filename(subject)
+            
+            # Dateiname mit Ordner-Präfix
+            filename = f"{date_str}--[{folder_name}]--{subject}.txt"
+            filepath = self.mail_dir / filename
+            
+            # E-Mail-Inhalt extrahieren
+            body = email_data.get('body', {})
+            content_type = body.get('contentType', 'text/plain')
+            text_content = body.get('content', '')
+            
+            if not text_content:
+                text_content = email_data.get('bodyPreview', 'Kein Inhalt verfügbar')
+            
+            # Text extrahieren
+            extracted_text = self.extract_text_from_email(text_content, content_type)
+            
+            # Absender und Empfänger
+            from_info = email_data.get('from', {})
+            from_email = from_info.get('emailAddress', {}).get('address', 'Unbekannt')
+            from_name = from_info.get('emailAddress', {}).get('name', '')
+            
+            to_recipients = email_data.get('toRecipients', [])
+            to_email = to_recipients[0].get('emailAddress', {}).get('address', 'Unbekannt') if to_recipients else 'Unbekannt'
+            
+            # Metadaten hinzufügen
+            email_text = f"""Von: {from_name} <{from_email}>
+An: {to_email}
+Datum: {received_date_str}
+Betreff: {email_data.get('subject', 'Kein Betreff')}
+Ordner: {folder_name}
+
+{extracted_text}
+"""
+            
+            # Datei speichern
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(email_text)
+            
+            logger.info(f"E-Mail gespeichert: {filename}")
+            return str(filepath)
+            
+        except Exception as e:
+            logger.error(f"Fehler beim Speichern der E-Mail: {e}")
+            return None
 
 
 def main():
