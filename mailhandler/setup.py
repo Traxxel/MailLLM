@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 from pathlib import Path
+from setuptools import setup, find_packages
 
 
 def run_command(command: str, description: str) -> bool:
@@ -203,4 +204,23 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
+
+setup(
+    name='MailLLM',
+    version='1.0.0',
+    description='E-Mail Downloader für LLM-Recherche (nur Microsoft Graph API)',
+    author='Dein Name',
+    packages=find_packages(),
+    install_requires=[
+        'requests',
+        'python-dotenv',
+        'tqdm',
+        'html2text',
+    ],
+    entry_points={
+        'console_scripts': [
+            'mail_downloader_graph = mail_downloader_graph:main',
+        ],
+    },
+) 
