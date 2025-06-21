@@ -10,7 +10,7 @@ import sys
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
 
 from dotenv import load_dotenv
@@ -50,6 +50,11 @@ class MailDownloaderGraph:
         self.max_emails = int(os.getenv('MAX_EMAILS', '100'))
         self.days_back = int(os.getenv('DAYS_BACK', '30'))
         self.mail_dir = Path(os.getenv('MAIL_DIR', 'mails'))
+        
+        # Neue Optionen für Unterverzeichnisse und Archive
+        self.include_folders = os.getenv('INCLUDE_FOLDERS', 'true').lower() == 'true'
+        self.include_archive = os.getenv('INCLUDE_ARCHIVE', 'true').lower() == 'true'
+        self.folder_names = os.getenv('FOLDER_NAMES', '').split(',') if os.getenv('FOLDER_NAMES') else []
         
         # Graph API Endpoints
         self.graph_endpoint = "https://graph.microsoft.com/v1.0"
@@ -95,11 +100,11 @@ class MailDownloaderGraph:
         if not result:
             result = app.acquire_token_for_client(scopes=scopes)
         
-        if "access_token" in result:
+        if result and "access_token" in result:
             logger.info("OAuth2-Token erfolgreich erhalten")
             return result['access_token']
         else:
-            error_msg = f"Fehler beim OAuth2-Token: {result.get('error_description', result.get('error', 'Unbekannter Fehler'))}"
+            error_msg = f"Fehler beim OAuth2-Token: {result.get('error_description', result.get('error', 'Unbekannter Fehler')) if result else 'Kein Token erhalten'}"
             logger.error(error_msg)
             raise ValueError(error_msg)
     
@@ -155,30 +160,130 @@ class MailDownloaderGraph:
         # Zeitraum definieren
         since_date = (datetime.now() - timedelta(days=self.days_back)).strftime('%Y-%m-%dT%H:%M:%SZ')
         
-        # Graph API Anfrage
-        url = f"{self.graph_endpoint}/users/{self.email_address}/messages"
-        params = {
-            '$top': self.max_emails,
-            '$orderby': 'receivedDateTime desc',
-            '$filter': f"receivedDateTime ge {since_date}",
-            '$select': 'id,subject,from,toRecipients,receivedDateTime,body,bodyPreview'
-        }
+        all_emails = []
         
+        # 1. Posteingang (Inbox)
+        logger.info("Lade E-Mails aus dem Posteingang...")
+        inbox_emails = self._get_emails_from_folder(access_token, headers, since_date, "Inbox")
+        all_emails.extend(inbox_emails)
+        
+        # 2. Unterverzeichnisse (Ordner)
+        if self.include_folders:
+            logger.info("Lade E-Mails aus Unterverzeichnissen...")
+            folder_emails = self._get_emails_from_folders(access_token, headers, since_date)
+            all_emails.extend(folder_emails)
+        
+        # 3. Archiv
+        if self.include_archive:
+            logger.info("Lade E-Mails aus dem Archiv...")
+            try:
+                archive_emails = self._get_emails_from_folder(access_token, headers, since_date, "Archive")
+                all_emails.extend(archive_emails)
+            except Exception as e:
+                logger.warning(f"Archiv nicht verfügbar: {e}")
+        
+        logger.info(f"Gesamt E-Mails von Graph API erhalten: {len(all_emails)}")
+        return all_emails
+    
+    def _get_emails_from_folder(self, access_token: str, headers: Dict[str, str], since_date: str, folder_name: str) -> List[Dict[str, Any]]:
+        """Holt E-Mails aus einem spezifischen Ordner"""
         try:
+            # Graph API Anfrage für spezifischen Ordner
+            if folder_name.lower() == "inbox":
+                url = f"{self.graph_endpoint}/users/{self.email_address}/mailFolders/inbox/messages"
+            elif folder_name.lower() == "archive":
+                url = f"{self.graph_endpoint}/users/{self.email_address}/mailFolders/archive/messages"
+            else:
+                # Für andere Ordner müssen wir zuerst die Ordner-ID finden
+                folder_id = self._get_folder_id(access_token, headers, folder_name)
+                if not folder_id:
+                    logger.warning(f"Ordner '{folder_name}' nicht gefunden")
+                    return []
+                url = f"{self.graph_endpoint}/users/{self.email_address}/mailFolders/{folder_id}/messages"
+            
+            params = {
+                '$top': self.max_emails,
+                '$orderby': 'receivedDateTime desc',
+                '$filter': f"receivedDateTime ge {since_date}",
+                '$select': 'id,subject,from,toRecipients,receivedDateTime,body,bodyPreview'
+            }
+            
             response = requests.get(url, headers=headers, params=params)
             response.raise_for_status()
             
             data = response.json()
             emails = data.get('value', [])
             
-            logger.info(f"E-Mails von Graph API erhalten: {len(emails)}")
+            # Ordner-Information zu jeder E-Mail hinzufügen
+            for email in emails:
+                email['folder_name'] = folder_name
+            
+            logger.info(f"E-Mails aus {folder_name}: {len(emails)}")
             return emails
             
         except requests.exceptions.RequestException as e:
-            logger.error(f"Fehler bei Graph API Anfrage: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error(f"Response: {e.response.text}")
-            raise
+            logger.error(f"Fehler bei Graph API Anfrage für {folder_name}: {e}")
+            return []
+    
+    def _get_folder_id(self, access_token: str, headers: Dict[str, str], folder_name: str) -> Optional[str]:
+        """Findet die ID eines Ordners anhand des Namens"""
+        try:
+            url = f"{self.graph_endpoint}/users/{self.email_address}/mailFolders"
+            params = {
+                '$filter': f"displayName eq '{folder_name}'"
+            }
+            
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            folders = data.get('value', [])
+            
+            if folders:
+                return folders[0]['id']
+            else:
+                return None
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Fehler beim Suchen des Ordners {folder_name}: {e}")
+            return None
+    
+    def _get_emails_from_folders(self, access_token: str, headers: Dict[str, str], since_date: str) -> List[Dict[str, Any]]:
+        """Holt E-Mails aus allen verfügbaren Ordnern"""
+        all_emails = []
+        
+        try:
+            # Alle Ordner auflisten
+            url = f"{self.graph_endpoint}/users/{self.email_address}/mailFolders"
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            
+            data = response.json()
+            folders = data.get('value', [])
+            
+            for folder in folders:
+                folder_name = folder.get('displayName', '')
+                
+                # Überspringe spezielle Ordner
+                if folder_name.lower() in ['inbox', 'archive', 'sent items', 'deleted items', 'drafts']:
+                    continue
+                
+                # Prüfe ob spezifische Ordner gefiltert werden sollen
+                if self.folder_names and folder_name not in self.folder_names:
+                    continue
+                
+                logger.info(f"Prüfe Ordner: {folder_name}")
+                try:
+                    folder_emails = self._get_emails_from_folder(access_token, headers, since_date, folder_name)
+                    all_emails.extend(folder_emails)
+                except Exception as e:
+                    logger.warning(f"Fehler beim Zugriff auf Ordner {folder_name}: {e}")
+                    continue
+        
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Fehler beim Auflisten der Ordner: {e}")
+        
+        return all_emails
     
     def download_via_graph_api(self) -> List[str]:
         """Lädt E-Mails über Microsoft Graph API herunter"""
@@ -209,8 +314,11 @@ class MailDownloaderGraph:
                 subject = email_data.get('subject', 'Kein_Betreff')
                 subject = self.sanitize_filename(subject)
                 
-                # Dateiname
-                filename = f"{date_str}--{subject}.txt"
+                # Ordner-Information
+                folder_name = email_data.get('folder_name', 'Unknown')
+                
+                # Dateiname mit Ordner-Präfix
+                filename = f"{date_str}--[{folder_name}]--{subject}.txt"
                 filepath = self.mail_dir / filename
                 
                 # E-Mail-Inhalt extrahieren
@@ -237,6 +345,7 @@ class MailDownloaderGraph:
 An: {to_email}
 Datum: {received_date_str}
 Betreff: {email_data.get('subject', 'Kein Betreff')}
+Ordner: {folder_name}
 
 {extracted_text}
 """

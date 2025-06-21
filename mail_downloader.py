@@ -29,6 +29,7 @@ try:
     import poplib
     import email
     from email.header import decode_header
+    from email import utils as email_utils
     POP3_AVAILABLE = True
 except ImportError:
     POP3_AVAILABLE = False
@@ -59,6 +60,11 @@ class MailDownloader:
         self.max_emails = int(os.getenv('MAX_EMAILS', '100'))
         self.days_back = int(os.getenv('DAYS_BACK', '30'))
         self.mail_dir = Path(os.getenv('MAIL_DIR', 'mails'))
+        
+        # Neue Optionen für Unterverzeichnisse und Archive
+        self.include_folders = os.getenv('INCLUDE_FOLDERS', 'true').lower() == 'true'
+        self.include_archive = os.getenv('INCLUDE_ARCHIVE', 'true').lower() == 'true'
+        self.folder_names = os.getenv('FOLDER_NAMES', '').split(',') if os.getenv('FOLDER_NAMES') else []
         
         # HTML zu Text Konverter
         self.html_converter = html2text.HTML2Text()
@@ -128,60 +134,136 @@ class MailDownloader:
         # Zeitraum definieren
         start_date = datetime.now() - timedelta(days=self.days_back)
         
-        # E-Mails abrufen
-        messages = account.inbox.filter(received__gte=start_date).order_by('-datetime_received')[:self.max_emails]
-        
         downloaded_files = []
         
-        for message in tqdm(messages, desc="E-Mails herunterladen"):
+        # 1. Posteingang (Inbox)
+        logger.info("Lade E-Mails aus dem Posteingang...")
+        inbox_files = self._download_from_folder(account.inbox, start_date, "Inbox")
+        downloaded_files.extend(inbox_files)
+        
+        # 2. Unterverzeichnisse (Ordner)
+        if self.include_folders:
+            logger.info("Lade E-Mails aus Unterverzeichnissen...")
+            folder_files = self._download_from_folders(account, start_date)
+            downloaded_files.extend(folder_files)
+        
+        # 3. Archiv
+        if self.include_archive:
+            logger.info("Lade E-Mails aus dem Archiv...")
             try:
-                # Empfangsdatum
-                received_date = message.datetime_received
-                date_str = received_date.strftime('%Y-%m-%d-%H-%M-%S')
-                
-                # Betreff
-                subject = message.subject or "Kein_Betreff"
-                subject = self.sanitize_filename(subject)
-                
-                # Dateiname
-                filename = f"{date_str}--{subject}.txt"
-                filepath = self.mail_dir / filename
-                
-                # E-Mail-Inhalt extrahieren
-                if message.body:
-                    content_type = 'text/plain'
-                    if hasattr(message, 'body_type') and message.body_type == 'HTML':
-                        content_type = 'text/html'
-                    
-                    text_content = self.extract_text_from_email(message.body, content_type)
+                # Prüfe ob Archive-Attribut existiert
+                if hasattr(account, 'archive'):
+                    archive_files = self._download_from_folder(account.archive, start_date, "Archive")
+                    downloaded_files.extend(archive_files)
                 else:
-                    text_content = "Kein Inhalt verfügbar"
+                    logger.info("Archiv nicht verfügbar für dieses Konto")
+            except Exception as e:
+                logger.warning(f"Archiv nicht verfügbar: {e}")
+        
+        return downloaded_files
+    
+    def _download_from_folder(self, folder, start_date: datetime, folder_name: str) -> List[str]:
+        """Lädt E-Mails aus einem spezifischen Ordner"""
+        try:
+            messages = folder.filter(received__gte=start_date).order_by('-datetime_received')[:self.max_emails]
+            downloaded_files = []
+            
+            for message in tqdm(messages, desc=f"E-Mails aus {folder_name}"):
+                try:
+                    filepath = self._save_email_message(message, folder_name)
+                    if filepath:
+                        downloaded_files.append(filepath)
+                except Exception as e:
+                    logger.error(f"Fehler beim Verarbeiten der E-Mail aus {folder_name}: {e}")
+                    continue
+            
+            return downloaded_files
+        except Exception as e:
+            logger.error(f"Fehler beim Zugriff auf {folder_name}: {e}")
+            return []
+    
+    def _download_from_folders(self, account, start_date: datetime) -> List[str]:
+        """Lädt E-Mails aus allen verfügbaren Ordnern"""
+        downloaded_files = []
+        
+        try:
+            # Alle Ordner auflisten
+            folders = account.root.walk()
+            
+            for folder in folders:
+                # Überspringe spezielle Ordner
+                if folder.folder_class in ['IPF.Note', 'IPF'] and folder.name not in ['Inbox', 'Archive', 'Sent Items', 'Deleted Items']:
+                    # Prüfe ob spezifische Ordner gefiltert werden sollen
+                    if self.folder_names and folder.name not in self.folder_names:
+                        continue
+                    
+                    logger.info(f"Prüfe Ordner: {folder.name}")
+                    try:
+                        folder_files = self._download_from_folder(folder, start_date, folder.name)
+                        downloaded_files.extend(folder_files)
+                    except Exception as e:
+                        logger.warning(f"Fehler beim Zugriff auf Ordner {folder.name}: {e}")
+                        continue
+        
+        except Exception as e:
+            logger.error(f"Fehler beim Auflisten der Ordner: {e}")
+        
+        return downloaded_files
+    
+    def _save_email_message(self, message, folder_name: str = "Inbox") -> Optional[str]:
+        """Speichert eine einzelne E-Mail-Nachricht"""
+        try:
+            # Empfangsdatum
+            received_date = message.datetime_received
+            date_str = received_date.strftime('%Y-%m-%d-%H-%M-%S')
+            
+            # Betreff
+            subject = message.subject or "Kein_Betreff"
+            subject = self.sanitize_filename(subject)
+            
+            # Dateiname mit Ordner-Präfix
+            filename = f"{date_str}--[{folder_name}]--{subject}.txt"
+            filepath = self.mail_dir / filename
+            
+            # E-Mail-Inhalt extrahieren
+            if message.body:
+                content_type = 'text/plain'
+                if hasattr(message, 'body_type') and message.body_type == 'HTML':
+                    content_type = 'text/html'
                 
-                # Metadaten hinzufügen
-                email_text = f"""Von: {message.sender.email_address if message.sender else 'Unbekannt'}
+                text_content = self.extract_text_from_email(message.body, content_type)
+            else:
+                text_content = "Kein Inhalt verfügbar"
+            
+            # Metadaten hinzufügen
+            email_text = f"""Von: {message.sender.email_address if message.sender else 'Unbekannt'}
 An: {message.to_recipients[0].email_address if message.to_recipients else 'Unbekannt'}
 Datum: {received_date.strftime('%Y-%m-%d %H:%M:%S')}
 Betreff: {message.subject or 'Kein Betreff'}
+Ordner: {folder_name}
 
 {text_content}
 """
-                
-                # Datei speichern
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(email_text)
-                
-                downloaded_files.append(str(filepath))
-                logger.info(f"E-Mail gespeichert: {filename}")
-                
-            except Exception as e:
-                logger.error(f"Fehler beim Verarbeiten der E-Mail: {e}")
-                continue
-        
-        return downloaded_files
+            
+            # Datei speichern
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(email_text)
+            
+            logger.info(f"E-Mail gespeichert: {filename}")
+            return str(filepath)
+            
+        except Exception as e:
+            logger.error(f"Fehler beim Speichern der E-Mail: {e}")
+            return None
     
     def download_via_pop3(self) -> List[str]:
         """Lädt E-Mails über POP3 herunter"""
         logger.info("Starte E-Mail-Download über POP3...")
+        
+        # Type-Check für Anmeldedaten
+        if not self.email_address or not self.email_password:
+            logger.error("EMAIL_ADDRESS oder EMAIL_PASSWORD nicht gesetzt")
+            return []
         
         # POP3-Verbindung aufbauen
         pop3_server = poplib.POP3_SSL(self.email_server, 995)
@@ -207,7 +289,7 @@ Betreff: {message.subject or 'Kein Betreff'}
                 date_str = msg['date']
                 if date_str:
                     try:
-                        parsed_date = email.utils.parsedate_to_datetime(date_str)
+                        parsed_date = email_utils.parsedate_to_datetime(date_str)
                         date_str = parsed_date.strftime('%Y-%m-%d-%H-%M-%S')
                     except:
                         date_str = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
@@ -223,7 +305,7 @@ Betreff: {message.subject or 'Kein Betreff'}
                 subject = self.sanitize_filename(subject)
                 
                 # Dateiname
-                filename = f"{date_str}--{subject}.txt"
+                filename = f"{date_str}--[POP3]--{subject}.txt"
                 filepath = self.mail_dir / filename
                 
                 # E-Mail-Inhalt extrahieren
@@ -233,11 +315,15 @@ Betreff: {message.subject or 'Kein Betreff'}
                         if part.get_content_maintype() == 'multipart':
                             continue
                         if part.get_content_maintype() == 'text':
-                            text_content = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                            payload = part.get_payload(decode=True)
+                            if payload:
+                                text_content = payload.decode('utf-8', errors='ignore')
                             content_type = part.get_content_type()
                             break
                 else:
-                    text_content = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+                    payload = msg.get_payload(decode=True)
+                    if payload:
+                        text_content = payload.decode('utf-8', errors='ignore')
                     content_type = msg.get_content_type()
                 
                 # Text extrahieren
@@ -248,6 +334,7 @@ Betreff: {message.subject or 'Kein Betreff'}
 An: {msg['to'] or 'Unbekannt'}
 Datum: {msg['date'] or 'Unbekannt'}
 Betreff: {msg['subject'] or 'Kein Betreff'}
+Ordner: POP3
 
 {extracted_text}
 """
