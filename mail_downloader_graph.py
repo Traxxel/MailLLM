@@ -59,6 +59,7 @@ class MailDownloaderGraph:
         # Chunk-basiertes Laden
         self.chunk_size = int(os.getenv('CHUNK_SIZE', '50'))
         self.load_all_emails = os.getenv('LOAD_ALL_EMAILS', 'true').lower() == 'true'
+        self.max_emails_per_folder = int(os.getenv('MAX_EMAILS_PER_FOLDER', '0'))  # 0 = unbegrenzt
         
         # Graph API Endpoints
         self.graph_endpoint = "https://graph.microsoft.com/v1.0"
@@ -249,9 +250,9 @@ class MailDownloaderGraph:
                 
                 skip_count += self.chunk_size
                 
-                # Sicherheitscheck: Maximal 1000 E-Mails pro Ordner
-                if skip_count >= 1000:
-                    logger.warning(f"Maximale Anzahl E-Mails (1000) für {folder_name} erreicht")
+                # Optionaler Sicherheitscheck: Maximal E-Mails pro Ordner
+                if self.max_emails_per_folder > 0 and skip_count >= self.max_emails_per_folder:
+                    logger.warning(f"Maximale Anzahl E-Mails ({self.max_emails_per_folder}) für {folder_name} erreicht")
                     break
             
             logger.info(f"Gesamt E-Mails aus {folder_name}: {len(all_emails)}")

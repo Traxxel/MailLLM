@@ -49,6 +49,7 @@ FOLDER_NAMES=Wichtig,Projekte,Newsletter
 # Chunk-basiertes Laden (für große E-Mail-Mengen)
 CHUNK_SIZE=50
 LOAD_ALL_EMAILS=true
+MAX_EMAILS_PER_FOLDER=0
 ```
 
 > **Hinweis:** Das Feld `EMAIL_PASSWORD` wird nicht mehr benötigt, wenn OAuth2/Azure verwendet wird.
@@ -76,6 +77,7 @@ Die E-Mails werden im Verzeichnis `mails/` gespeichert mit dem Format:
 - Verhindert Timeouts bei großen E-Mail-Mengen
 - `LOAD_ALL_EMAILS=true` lädt alle verfügbaren E-Mails
 - `CHUNK_SIZE=50` bestimmt die Größe jedes Pakets
+- `MAX_EMAILS_PER_FOLDER=0` = unbegrenzt (oder setze einen Wert für Limit)
 
 ## Programme im Überblick
 
