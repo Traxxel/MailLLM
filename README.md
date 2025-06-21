@@ -40,16 +40,32 @@ AZURE_TENANT_ID=dein_tenant_id
 AZURE_CLIENT_SECRET=dein_client_secret
 EMAIL_SERVER=outlook.office365.com
 USE_EWS=true
+
+# Optionale Einstellungen für Ordner und Archive
+INCLUDE_FOLDERS=true
+INCLUDE_ARCHIVE=true
+FOLDER_NAMES=Wichtig,Projekte,Newsletter
 ```
+
+> **Hinweis:** Das Feld `EMAIL_PASSWORD` wird nicht mehr benötigt, wenn OAuth2/Azure verwendet wird.
 
 ## Verwendung
 
 ```bash
+# E-Mails aus Posteingang, Ordnern und Archiv herunterladen
+python mail_downloader_graph.py
+
+# Nur aus dem Posteingang (klassisch)
 python mail_downloader.py
 ```
 
 Die E-Mails werden im Verzeichnis `mails/` gespeichert mit dem Format:
-`yyyy-mm-dd-hh-mm-ss--Betreff.txt`
+`yyyy-mm-dd-hh-mm-ss--[Ordner]--Betreff.txt`
+
+**Unterstützte Quellen:**
+- Posteingang (Inbox)
+- Benutzerdefinierte Ordner (konfigurierbar)
+- Archiv (falls verfügbar)
 
 ## Programme im Überblick
 
