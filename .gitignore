@@ -42,7 +42,7 @@ ENV/
 *.log
 
 # Heruntergeladene E-Mails (optional)
-# mails/
+mails/
 
 # OS
 .DS_Store
