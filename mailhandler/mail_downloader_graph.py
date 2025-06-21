@@ -51,6 +51,9 @@ class MailDownloaderGraph:
         self.days_back = int(os.getenv('DAYS_BACK', '30'))
         self.mail_dir = Path(os.getenv('MAIL_DIR', 'mails'))
         
+        # PDF-Verzeichnis für Attachments
+        self.pdf_dir = self.mail_dir / 'pdf'
+        
         # Neue Optionen für Unterverzeichnisse und Archive
         self.include_folders = os.getenv('INCLUDE_FOLDERS', 'true').lower() == 'true'
         self.include_archive = os.getenv('INCLUDE_ARCHIVE', 'true').lower() == 'true'
@@ -69,8 +72,9 @@ class MailDownloaderGraph:
         self.html_converter.ignore_images = False
         self.html_converter.body_width = 0
         
-        # Verzeichnis erstellen
+        # Verzeichnisse erstellen
         self.mail_dir.mkdir(exist_ok=True)
+        self.pdf_dir.mkdir(exist_ok=True)
         
         self._validate_config()
     
@@ -220,7 +224,8 @@ class MailDownloaderGraph:
                     '$skip': skip_count,
                     '$orderby': 'receivedDateTime desc',
                     '$filter': f"receivedDateTime ge {since_date}",
-                    '$select': 'id,subject,from,toRecipients,receivedDateTime,body,bodyPreview'
+                    '$select': 'id,subject,from,toRecipients,receivedDateTime,body,bodyPreview',
+                    '$expand': 'attachments'
                 }
                 
                 logger.info(f"Lade Chunk {skip_count//self.chunk_size + 1} für {folder_name} (Skip: {skip_count})")
@@ -403,7 +408,8 @@ class MailDownloaderGraph:
                     '$skip': skip_count,
                     '$orderby': 'receivedDateTime desc',
                     '$filter': f"receivedDateTime ge {since_date}",
-                    '$select': 'id,subject,from,toRecipients,receivedDateTime,body,bodyPreview'
+                    '$select': 'id,subject,from,toRecipients,receivedDateTime,body,bodyPreview',
+                    '$expand': 'attachments'
                 }
                 
                 logger.info(f"Lade Chunk {skip_count//self.chunk_size + 1} für {folder_name} (Skip: {skip_count})")
@@ -504,7 +510,7 @@ class MailDownloaderGraph:
         return downloaded_files
     
     def _save_email_data(self, email_data: Dict[str, Any], folder_name: str) -> Optional[str]:
-        """Speichert eine einzelne E-Mail-Nachricht"""
+        """Speichert eine einzelne E-Mail-Nachricht und lädt PDF-Attachments herunter"""
         try:
             # Empfangsdatum
             received_date_str = email_data.get('receivedDateTime', '')
@@ -559,10 +565,88 @@ Ordner: {folder_name}
                 f.write(email_text)
             
             logger.info(f"E-Mail gespeichert: {filename}")
+            
+            # PDF-Attachments herunterladen
+            pdf_files = self._download_pdf_attachments(email_data, folder_name, date_str)
+            if pdf_files:
+                logger.info(f"{len(pdf_files)} PDF-Attachments für E-Mail heruntergeladen")
+            
             return str(filepath)
             
         except Exception as e:
             logger.error(f"Fehler beim Speichern der E-Mail: {e}")
+            return None
+    
+    def _download_pdf_attachments(self, email_data: Dict[str, Any], folder_name: str, date_str: str) -> List[str]:
+        """Lädt PDF-Attachments aus einer E-Mail herunter"""
+        downloaded_pdfs = []
+        
+        try:
+            attachments = email_data.get('attachments', [])
+            if not attachments:
+                return downloaded_pdfs
+            
+            # Nur PDF-Attachments verarbeiten
+            pdf_attachments = [att for att in attachments if att.get('contentType', '').lower() == 'application/pdf']
+            
+            if not pdf_attachments:
+                return downloaded_pdfs
+            
+            logger.info(f"Lade {len(pdf_attachments)} PDF-Attachments...")
+            
+            for attachment in pdf_attachments:
+                try:
+                    attachment_name = attachment.get('name', 'Unbekannt.pdf')
+                    attachment_id = attachment.get('id')
+                    
+                    if not attachment_id:
+                        logger.warning(f"Keine ID für Attachment: {attachment_name}")
+                        continue
+                    
+                    # PDF-Dateiname mit Timestamp erstellen
+                    safe_name = self.sanitize_filename(attachment_name)
+                    if not safe_name.lower().endswith('.pdf'):
+                        safe_name += '.pdf'
+                    
+                    pdf_filename = f"{date_str}--[{folder_name}]--{safe_name}"
+                    pdf_filepath = self.pdf_dir / pdf_filename
+                    
+                    # PDF-Daten herunterladen
+                    pdf_content = self._download_attachment_content(attachment_id)
+                    if pdf_content:
+                        with open(pdf_filepath, 'wb') as f:
+                            f.write(pdf_content)
+                        
+                        downloaded_pdfs.append(str(pdf_filepath))
+                        logger.info(f"PDF gespeichert: {pdf_filename}")
+                    
+                except Exception as e:
+                    logger.error(f"Fehler beim Herunterladen von PDF-Attachment {attachment.get('name', 'Unbekannt')}: {e}")
+                    continue
+            
+        except Exception as e:
+            logger.error(f"Fehler beim Verarbeiten der PDF-Attachments: {e}")
+        
+        return downloaded_pdfs
+    
+    def _download_attachment_content(self, attachment_id: str) -> Optional[bytes]:
+        """Lädt den Inhalt eines Attachments herunter"""
+        try:
+            access_token = self.get_access_token()
+            headers = {
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            }
+            
+            # Attachment-Inhalt herunterladen
+            url = f"{self.graph_endpoint}/users/{self.email_address}/attachments/{attachment_id}/$value"
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            
+            return response.content
+            
+        except Exception as e:
+            logger.error(f"Fehler beim Herunterladen des Attachment-Inhalts: {e}")
             return None
 
 
