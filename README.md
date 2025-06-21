@@ -24,12 +24,21 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-2. E-Mail-Zugangsdaten in `.env` eintragen:
+2. Azure App-Registrierung durchführen:
+   - Registriere eine Anwendung im [Azure-Portal](https://portal.azure.com) unter Azure Active Directory > App-Registrierungen.
+   - Notiere dir die folgenden Werte:
+     - `AZURE_CLIENT_ID` (Anwendungs-ID)
+     - `AZURE_TENANT_ID` (Verzeichnis-ID)
+     - `AZURE_CLIENT_SECRET` (Client-Geheimnis)
+   - Weise die nötigen Berechtigungen für Microsoft Graph (z.B. `Mail.Read`) zu.
+
+3. Trage die Zugangsdaten in `.env` ein:
 ```
 EMAIL_ADDRESS=deine.email@domain.com
-EMAIL_PASSWORD=dein_passwort
+AZURE_CLIENT_ID=deine_client_id
+AZURE_TENANT_ID=dein_tenant_id
+AZURE_CLIENT_SECRET=dein_client_secret
 EMAIL_SERVER=outlook.office365.com
-EMAIL_PORT=587
 USE_EWS=true
 ```
 
@@ -42,8 +51,20 @@ python mail_downloader.py
 Die E-Mails werden im Verzeichnis `mails/` gespeichert mit dem Format:
 `yyyy-mm-dd-hh-mm-ss--Betreff.txt`
 
+## Programme im Überblick
+
+| Programm                   | Beschreibung                                                      | Beispielaufruf                                  |
+|----------------------------|-------------------------------------------------------------------|-------------------------------------------------|
+| mail_downloader.py         | Lädt E-Mails per EWS (klassisch, Passwort oder App-Passwort)      | `python mail_downloader.py`                     |
+| mail_downloader_graph.py   | Lädt E-Mails per Microsoft Graph API (OAuth2, Azure Client Secret)| `python mail_downloader_graph.py`               |
+| mail_search.py             | Sucht, fasst zusammen und exportiert E-Mails für LLMs             | `python mail_search.py --search Meeting`         |
+|                            |                                                                   | `python mail_search.py --summary`                |
+|                            |                                                                   | `python mail_search.py --export`                 |
+| llm_integration_example.py | Beispiel für LLM-Integration mit geladenen E-Mails                | `python llm_integration_example.py`              |
+
 ## Sicherheit
 
-- Verwende niemals echte Passwörter in der `.env` Datei
-- Nutze App-Passwörter oder OAuth2-Tokens
-- Die `.env` Datei ist in `.gitignore` aufgenommen 
+- Speichere niemals echte Passwörter oder Secrets in öffentlichen Repositories
+- Nutze ausschließlich Umgebungsvariablen oder eine `.env` Datei (diese ist in `.gitignore` aufgenommen)
+- Erstelle und verwalte das Azure Client Secret sicher im Azure-Portal
+- Vergib nur die minimal notwendigen Berechtigungen für die App-Registrierung 
