@@ -587,7 +587,7 @@ Ordner: {folder_name}
                 return downloaded_pdfs
             
             # Nur PDF-Attachments verarbeiten
-            pdf_attachments = [att for att in attachments if att.get('contentType', '').lower() == 'application/pdf']
+            pdf_attachments = [att for att in attachments if att.get('contentType') and att.get('contentType', '').lower() == 'application/pdf']
             
             if not pdf_attachments:
                 return downloaded_pdfs
@@ -598,9 +598,10 @@ Ordner: {folder_name}
                 try:
                     attachment_name = attachment.get('name', 'Unbekannt.pdf')
                     attachment_id = attachment.get('id')
+                    email_id = email_data.get('id')
                     
-                    if not attachment_id:
-                        logger.warning(f"Keine ID für Attachment: {attachment_name}")
+                    if not attachment_id or not email_id:
+                        logger.warning(f"Keine ID für Attachment oder E-Mail: {attachment_name}")
                         continue
                     
                     # PDF-Dateiname mit Timestamp erstellen
@@ -612,7 +613,7 @@ Ordner: {folder_name}
                     pdf_filepath = self.pdf_dir / pdf_filename
                     
                     # PDF-Daten herunterladen
-                    pdf_content = self._download_attachment_content(attachment_id)
+                    pdf_content = self._download_attachment_content(email_id, attachment_id)
                     if pdf_content:
                         with open(pdf_filepath, 'wb') as f:
                             f.write(pdf_content)
@@ -629,7 +630,7 @@ Ordner: {folder_name}
         
         return downloaded_pdfs
     
-    def _download_attachment_content(self, attachment_id: str) -> Optional[bytes]:
+    def _download_attachment_content(self, email_id: str, attachment_id: str) -> Optional[bytes]:
         """Lädt den Inhalt eines Attachments herunter"""
         try:
             access_token = self.get_access_token()
@@ -638,8 +639,8 @@ Ordner: {folder_name}
                 'Content-Type': 'application/json'
             }
             
-            # Attachment-Inhalt herunterladen
-            url = f"{self.graph_endpoint}/users/{self.email_address}/attachments/{attachment_id}/$value"
+            # Attachment-Inhalt herunterladen - korrekte URL über E-Mail-ID
+            url = f"{self.graph_endpoint}/users/{self.email_address}/messages/{email_id}/attachments/{attachment_id}/$value"
             response = requests.get(url, headers=headers)
             response.raise_for_status()
             
