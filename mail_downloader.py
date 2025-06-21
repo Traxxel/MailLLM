@@ -66,6 +66,10 @@ class MailDownloader:
         self.include_archive = os.getenv('INCLUDE_ARCHIVE', 'true').lower() == 'true'
         self.folder_names = os.getenv('FOLDER_NAMES', '').split(',') if os.getenv('FOLDER_NAMES') else []
         
+        # Chunk-basiertes Laden
+        self.chunk_size = int(os.getenv('CHUNK_SIZE', '50'))
+        self.load_all_emails = os.getenv('LOAD_ALL_EMAILS', 'true').lower() == 'true'
+        
         # HTML zu Text Konverter
         self.html_converter = html2text.HTML2Text()
         self.html_converter.ignore_links = False
@@ -163,20 +167,52 @@ class MailDownloader:
         return downloaded_files
     
     def _download_from_folder(self, folder, start_date: datetime, folder_name: str) -> List[str]:
-        """Lädt E-Mails aus einem spezifischen Ordner"""
+        """Lädt E-Mails aus einem spezifischen Ordner mit Chunk-basiertem Laden"""
         try:
-            messages = folder.filter(received__gte=start_date).order_by('-datetime_received')[:self.max_emails]
             downloaded_files = []
+            offset = 0
             
-            for message in tqdm(messages, desc=f"E-Mails aus {folder_name}"):
-                try:
-                    filepath = self._save_email_message(message, folder_name)
-                    if filepath:
-                        downloaded_files.append(filepath)
-                except Exception as e:
-                    logger.error(f"Fehler beim Verarbeiten der E-Mail aus {folder_name}: {e}")
-                    continue
+            while True:
+                # E-Mails in Chunks abrufen
+                messages = folder.filter(received__gte=start_date).order_by('-datetime_received')[offset:offset + self.chunk_size]
+                messages_list = list(messages)
+                
+                if not messages_list:
+                    logger.info(f"Keine weiteren E-Mails in {folder_name}")
+                    break
+                
+                logger.info(f"Lade Chunk {offset//self.chunk_size + 1} für {folder_name} (Offset: {offset})")
+                
+                for message in tqdm(messages_list, desc=f"E-Mails aus {folder_name} (Chunk {offset//self.chunk_size + 1})"):
+                    try:
+                        filepath = self._save_email_message(message, folder_name)
+                        if filepath:
+                            downloaded_files.append(filepath)
+                    except Exception as e:
+                        logger.error(f"Fehler beim Verarbeiten der E-Mail aus {folder_name}: {e}")
+                        continue
+                
+                logger.info(f"Chunk geladen: {len(messages_list)} E-Mails aus {folder_name}")
+                
+                # Prüfe ob wir alle E-Mails laden sollen oder nur bis max_emails
+                if not self.load_all_emails and len(downloaded_files) >= self.max_emails:
+                    logger.info(f"Maximale Anzahl E-Mails ({self.max_emails}) erreicht für {folder_name}")
+                    downloaded_files = downloaded_files[:self.max_emails]
+                    break
+                
+                # Prüfe ob es weitere E-Mails gibt
+                if len(messages_list) < self.chunk_size:
+                    logger.info(f"Alle E-Mails aus {folder_name} geladen")
+                    break
+                
+                offset += self.chunk_size
+                
+                # Sicherheitscheck: Maximal 1000 E-Mails pro Ordner
+                if offset >= 1000:
+                    logger.warning(f"Maximale Anzahl E-Mails (1000) für {folder_name} erreicht")
+                    break
             
+            logger.info(f"Gesamt E-Mails aus {folder_name}: {len(downloaded_files)}")
             return downloaded_files
         except Exception as e:
             logger.error(f"Fehler beim Zugriff auf {folder_name}: {e}")

@@ -45,6 +45,10 @@ USE_EWS=true
 INCLUDE_FOLDERS=true
 INCLUDE_ARCHIVE=true
 FOLDER_NAMES=Wichtig,Projekte,Newsletter
+
+# Chunk-basiertes Laden (für große E-Mail-Mengen)
+CHUNK_SIZE=50
+LOAD_ALL_EMAILS=true
 ```
 
 > **Hinweis:** Das Feld `EMAIL_PASSWORD` wird nicht mehr benötigt, wenn OAuth2/Azure verwendet wird.
@@ -66,6 +70,12 @@ Die E-Mails werden im Verzeichnis `mails/` gespeichert mit dem Format:
 - Posteingang (Inbox)
 - Benutzerdefinierte Ordner (konfigurierbar)
 - Archiv (falls verfügbar)
+
+**Chunk-basiertes Laden:**
+- Lädt E-Mails in kleinen Paketen (standardmäßig 50 pro Chunk)
+- Verhindert Timeouts bei großen E-Mail-Mengen
+- `LOAD_ALL_EMAILS=true` lädt alle verfügbaren E-Mails
+- `CHUNK_SIZE=50` bestimmt die Größe jedes Pakets
 
 ## Programme im Überblick
 

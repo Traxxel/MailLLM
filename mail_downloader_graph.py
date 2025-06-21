@@ -56,6 +56,10 @@ class MailDownloaderGraph:
         self.include_archive = os.getenv('INCLUDE_ARCHIVE', 'true').lower() == 'true'
         self.folder_names = os.getenv('FOLDER_NAMES', '').split(',') if os.getenv('FOLDER_NAMES') else []
         
+        # Chunk-basiertes Laden
+        self.chunk_size = int(os.getenv('CHUNK_SIZE', '50'))
+        self.load_all_emails = os.getenv('LOAD_ALL_EMAILS', 'true').lower() == 'true'
+        
         # Graph API Endpoints
         self.graph_endpoint = "https://graph.microsoft.com/v1.0"
         
@@ -186,7 +190,7 @@ class MailDownloaderGraph:
         return all_emails
     
     def _get_emails_from_folder(self, access_token: str, headers: Dict[str, str], since_date: str, folder_name: str) -> List[Dict[str, Any]]:
-        """Holt E-Mails aus einem spezifischen Ordner"""
+        """Holt E-Mails aus einem spezifischen Ordner mit Chunk-basiertem Laden"""
         try:
             # Graph API Anfrage für spezifischen Ordner
             if folder_name.lower() == "inbox":
@@ -201,25 +205,57 @@ class MailDownloaderGraph:
                     return []
                 url = f"{self.graph_endpoint}/users/{self.email_address}/mailFolders/{folder_id}/messages"
             
-            params = {
-                '$top': self.max_emails,
-                '$orderby': 'receivedDateTime desc',
-                '$filter': f"receivedDateTime ge {since_date}",
-                '$select': 'id,subject,from,toRecipients,receivedDateTime,body,bodyPreview'
-            }
+            all_emails = []
+            skip_count = 0
             
-            response = requests.get(url, headers=headers, params=params)
-            response.raise_for_status()
+            while True:
+                params = {
+                    '$top': self.chunk_size,
+                    '$skip': skip_count,
+                    '$orderby': 'receivedDateTime desc',
+                    '$filter': f"receivedDateTime ge {since_date}",
+                    '$select': 'id,subject,from,toRecipients,receivedDateTime,body,bodyPreview'
+                }
+                
+                logger.info(f"Lade Chunk {skip_count//self.chunk_size + 1} für {folder_name} (Skip: {skip_count})")
+                
+                response = requests.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                
+                data = response.json()
+                emails = data.get('value', [])
+                
+                if not emails:
+                    logger.info(f"Keine weiteren E-Mails in {folder_name}")
+                    break
+                
+                # Ordner-Information zu jeder E-Mail hinzufügen
+                for email in emails:
+                    email['folder_name'] = folder_name
+                
+                all_emails.extend(emails)
+                logger.info(f"Chunk geladen: {len(emails)} E-Mails aus {folder_name}")
+                
+                # Prüfe ob wir alle E-Mails laden sollen oder nur bis max_emails
+                if not self.load_all_emails and len(all_emails) >= self.max_emails:
+                    logger.info(f"Maximale Anzahl E-Mails ({self.max_emails}) erreicht für {folder_name}")
+                    all_emails = all_emails[:self.max_emails]
+                    break
+                
+                # Prüfe ob es weitere E-Mails gibt
+                if len(emails) < self.chunk_size:
+                    logger.info(f"Alle E-Mails aus {folder_name} geladen")
+                    break
+                
+                skip_count += self.chunk_size
+                
+                # Sicherheitscheck: Maximal 1000 E-Mails pro Ordner
+                if skip_count >= 1000:
+                    logger.warning(f"Maximale Anzahl E-Mails (1000) für {folder_name} erreicht")
+                    break
             
-            data = response.json()
-            emails = data.get('value', [])
-            
-            # Ordner-Information zu jeder E-Mail hinzufügen
-            for email in emails:
-                email['folder_name'] = folder_name
-            
-            logger.info(f"E-Mails aus {folder_name}: {len(emails)}")
-            return emails
+            logger.info(f"Gesamt E-Mails aus {folder_name}: {len(all_emails)}")
+            return all_emails
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Fehler bei Graph API Anfrage für {folder_name}: {e}")
