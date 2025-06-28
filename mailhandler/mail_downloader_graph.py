@@ -120,12 +120,12 @@ class MailDownloaderGraph:
             raise ValueError(error_msg)
     
     def sanitize_filename(self, filename: str) -> str:
-        """Bereinigt Dateinamen von ungültigen Zeichen"""
+        """Bereinigt Dateinamen von ungültigen Zeichen und kürzt auf 50 Zeichen"""
         filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
         filename = re.sub(r'_+', '_', filename)
         filename = filename.strip()
-        if len(filename) > 100:
-            filename = filename[:100]
+        if len(filename) > 50:
+            filename = filename[:50]
         return filename
     
     def extract_text_from_email(self, email_content: str, content_type: str = 'text/plain') -> str:

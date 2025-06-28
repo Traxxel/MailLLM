@@ -1,5 +1,8 @@
+# Backup dieser Datei als requirements.txt.bak vor Änderungen erstellen
+# Die folgenden Pakete werden geprüft, ob sie noch benötigt werden:
+# exchangelib: Wird für EWS verwendet, das laut README nicht mehr unterstützt wird.
+# Die restlichen Pakete werden auf ihre Verwendung im aktuellen Code geprüft.
 python-dotenv==1.0.0
-exchangelib==5.4.0
 beautifulsoup4==4.12.2
 lxml==4.9.3
 python-dateutil==2.8.2
