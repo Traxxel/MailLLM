@@ -230,7 +230,7 @@ class MailDownloaderGraph:
                 params = {
                     '$top': self.chunk_size,
                     '$skip': skip_count,
-                    '$orderby': 'receivedDateTime desc',
+                    '$orderby': 'receivedDateTime asc',
                     '$filter': f"receivedDateTime ge {since_date}",
                     '$select': 'id,subject,from,toRecipients,receivedDateTime,body,bodyPreview',
                     '$expand': 'attachments'
@@ -414,7 +414,7 @@ class MailDownloaderGraph:
                 params = {
                     '$top': self.chunk_size,
                     '$skip': skip_count,
-                    '$orderby': 'receivedDateTime desc',
+                    '$orderby': 'receivedDateTime asc',
                     '$filter': f"receivedDateTime ge {since_date}",
                     '$select': 'id,subject,from,toRecipients,receivedDateTime,body,bodyPreview',
                     '$expand': 'attachments'
