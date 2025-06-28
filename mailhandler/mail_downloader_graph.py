@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import logging
+import time
 
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -79,6 +80,10 @@ class MailDownloaderGraph:
         self.mail_dir.mkdir(exist_ok=True)
         self.pdf_dir.mkdir(exist_ok=True)
         
+        # NEU: Token-Cache
+        self._access_token = None
+        self._token_expiry = None
+        
         self._validate_config()
     
     def _validate_config(self):
@@ -93,27 +98,27 @@ class MailDownloaderGraph:
             raise ValueError("CLIENT_ID, CLIENT_SECRET und TENANT_ID müssen in .env gesetzt werden")
     
     def get_access_token(self) -> str:
-        """Holt ein OAuth2-Token für Microsoft Graph API"""
+        """Holt ein OAuth2-Token für Microsoft Graph API (nur einmal pro Programmstart)"""
+        # Prüfe, ob Token schon existiert und noch gültig ist
+        if self._access_token and self._token_expiry and time.time() < self._token_expiry:
+            return self._access_token
         logger.info("Hole OAuth2-Token für Microsoft Graph...")
-        
-        # MSAL-Anwendung erstellen
         app = msal.ConfidentialClientApplication(
             client_id=self.client_id,
             client_credential=self.client_secret,
             authority=f"https://login.microsoftonline.com/{self.tenant_id}"
         )
-        
-        # Scopes für E-Mail-Zugriff
         scopes = ['https://graph.microsoft.com/.default']
-        
-        # Token anfordern
         result = app.acquire_token_silent(scopes, account=None)
         if not result:
             result = app.acquire_token_for_client(scopes=scopes)
-        
         if result and "access_token" in result:
             logger.info("OAuth2-Token erfolgreich erhalten")
-            return result['access_token']
+            self._access_token = result['access_token']
+            # Token-Ablaufzeit berechnen (Standard: 3600s, kann aber variieren)
+            expires_in = result.get('expires_in', 3600)
+            self._token_expiry = time.time() + expires_in - 60  # 1 Min Puffer
+            return self._access_token
         else:
             error_msg = f"Fehler beim OAuth2-Token: {result.get('error_description', result.get('error', 'Unbekannter Fehler')) if result else 'Kein Token erhalten'}"
             logger.error(error_msg)
