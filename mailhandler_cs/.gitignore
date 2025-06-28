@@ -1,0 +1,53 @@
+# Build-Ordner
+bin/
+obj/
+
+# User-spezifische Dateien
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider/VSCode/JetBrains
+.idea/
+.vscode/
+*.sln.iml
+
+# Paketverwaltung
+packages/
+*.nupkg
+*.snupkg
+
+# Logs
+*.log
+
+# Test-Ergebnisse
+TestResults/
+
+# Publish-Ordner
+publish/
+
+# Temporäre Dateien
+*.tmp
+*.temp
+
+# Konfigurationsdateien (nicht ins Repo)
+appsettings.json
+appsettings.json.stm
+
+# Sonstiges
+_ReSharper*/
+*.resharper
+*.DotSettings.user
+
+# Backup-Dateien
+*~
+*.bak
+
+# Sonstige IDE-Dateien
+*.dbmdl
+*.dbmdl-journal
+
+# MacOS/Linux
+.DS_Store
+*.swp 

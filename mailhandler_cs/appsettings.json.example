@@ -1,0 +1,16 @@
+{
+  "MailSettings": {
+    "EmailAddress": "deine-adresse@beispiel.de",
+    "ClientId": "<CLIENT_ID>",
+    "TenantId": "<TENANT_ID>",
+    "ClientSecret": "<CLIENT_SECRET>",
+    "MailDir": "mails",
+    "IncludeFolders": "true",
+    "IncludeArchive": "true",
+    "ChunkSize": "50",
+    "LoadAllEmails": "true",
+    "MaxEmailsPerFolder": "0",
+    "DaysBack": "30",
+    "MaxEmails": "100"
+  }
+} 
